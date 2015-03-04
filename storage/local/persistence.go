@@ -95,8 +95,9 @@ type indexingOp struct {
 // dropChunks, loadChunks, and loadChunkDescs can be called concurrently with
 // each other if each call refers to a different fingerprint.
 type persistence struct {
-	basePath string
-	chunkLen int
+	basePath  string
+	chunkLen  int
+	chunkType byte
 
 	archivedFingerprintToMetrics   *index.FingerprintMetricIndex
 	archivedFingerprintToTimeRange *index.FingerprintTimeRangeIndex
@@ -121,7 +122,7 @@ type persistence struct {
 }
 
 // newPersistence returns a newly allocated persistence backed by local disk storage, ready to use.
-func newPersistence(basePath string, chunkLen int, dirty bool) (*persistence, error) {
+func newPersistence(basePath string, chunkLen int, chunkType byte, dirty bool) (*persistence, error) {
 	dirtyPath := filepath.Join(basePath, dirtyFileName)
 	versionPath := filepath.Join(basePath, versionFileName)
 
@@ -178,8 +179,9 @@ func newPersistence(basePath string, chunkLen int, dirty bool) (*persistence, er
 	}
 
 	p := &persistence{
-		basePath: basePath,
-		chunkLen: chunkLen,
+		basePath:  basePath,
+		chunkLen:  chunkLen,
+		chunkType: chunkType,
 
 		archivedFingerprintToMetrics:   archivedFingerprintToMetrics,
 		archivedFingerprintToTimeRange: archivedFingerprintToTimeRange,
@@ -770,6 +772,7 @@ func (p *persistence) loadSeriesMapAndHeads() (sm *seriesMap, err error) {
 			chunkDescsOffset:   int(chunkDescsOffset),
 			savedFirstTime:     clientmodel.Timestamp(savedFirstTime),
 			headChunkPersisted: headChunkPersisted,
+			chunkType:          p.chunkType,
 		}
 	}
 	return sm, nil

@@ -35,64 +35,6 @@ const (
 	d8            = 8
 )
 
-// The 21-byte header of a delta-encoded chunk looks like:
-//
-// - time delta bytes:  1 bytes
-// - value delta bytes: 1 bytes
-// - is integer:        1 byte
-// - base time:         8 bytes
-// - base value:        8 bytes
-// - used buf bytes:    2 bytes
-const (
-	deltaHeaderBytes = 21
-
-	deltaHeaderTimeBytesOffset  = 0
-	deltaHeaderValueBytesOffset = 1
-	deltaHeaderIsIntOffset      = 2
-	deltaHeaderBaseTimeOffset   = 3
-	deltaHeaderBaseValueOffset  = 11
-	deltaHeaderBufLenOffset     = 19
-)
-
-// A deltaEncodedChunk adaptively stores sample timestamps and values with a
-// delta encoding of various types (int, float) and bit width. However, once 8
-// bytes would be needed to encode a delta value, a fall-back to the absolute
-// numbers happens (so that timestamps are saved directly as int64 and values as
-// float64). It implements the chunk interface.
-type deltaEncodedChunk struct {
-	buf []byte
-}
-
-// newDeltaEncodedChunk returns a newly allocated deltaEncodedChunk.
-func newDeltaEncodedChunk(tb, vb deltaBytes, isInt bool) *deltaEncodedChunk {
-	buf := make([]byte, deltaHeaderIsIntOffset+1, 1024)
-
-	buf[deltaHeaderTimeBytesOffset] = byte(tb)
-	buf[deltaHeaderValueBytesOffset] = byte(vb)
-	if vb < d8 && isInt { // Only use int for fewer than 8 value delta bytes.
-		buf[deltaHeaderIsIntOffset] = 1
-	} else {
-		buf[deltaHeaderIsIntOffset] = 0
-	}
-
-	return &deltaEncodedChunk{
-		buf: buf,
-	}
-}
-
-func (c *deltaEncodedChunk) newFollowupChunk() chunk {
-	return newDeltaEncodedChunk(d1, d0, true)
-}
-
-// clone implements chunk.
-func (c *deltaEncodedChunk) clone() chunk {
-	buf := make([]byte, len(c.buf), 1024)
-	copy(buf, c.buf)
-	return &deltaEncodedChunk{
-		buf: buf,
-	}
-}
-
 func neededDeltaBytes(deltaT clientmodel.Timestamp, deltaV clientmodel.SampleValue, isInt bool) (dtb, dvb deltaBytes) {
 	dtb = d1
 	if deltaT > math.MaxUint8 {
@@ -133,6 +75,78 @@ func max(a, b deltaBytes) deltaBytes {
 		return a
 	}
 	return b
+}
+
+// isInt64 returns true if v can be represented as an int64.
+func isInt64(v clientmodel.SampleValue) bool {
+	// Note: Using math.Modf is slower than the conversion approach below.
+	return clientmodel.SampleValue(int64(v)) == v
+}
+
+// isFloat32 returns true if v can be represented as an float32.
+func isFloat32(v clientmodel.SampleValue) bool {
+	return clientmodel.SampleValue(float32(v)) == v
+}
+
+// The 21-byte header of a delta-encoded chunk looks like:
+//
+// - time delta bytes:  1 bytes
+// - value delta bytes: 1 bytes
+// - is integer:        1 byte
+// - base time:         8 bytes
+// - base value:        8 bytes
+// - used buf bytes:    2 bytes
+const (
+	deltaHeaderBytes = 21
+
+	deltaHeaderTimeBytesOffset  = 0
+	deltaHeaderValueBytesOffset = 1
+	deltaHeaderIsIntOffset      = 2
+	deltaHeaderBaseTimeOffset   = 3
+	deltaHeaderBaseValueOffset  = 11
+	deltaHeaderBufLenOffset     = 19
+)
+
+// A deltaEncodedChunk adaptively stores sample timestamps and values with a
+// delta encoding of various types (int, float) and bit widths. However, once 8
+// bytes would be needed to encode a delta value, a fall-back to the absolute
+// numbers happens (so that timestamps are saved directly as int64 and values as
+// float64). It implements the chunk interface.
+type deltaEncodedChunk struct {
+	buf []byte
+}
+
+// newDeltaEncodedChunk returns a newly allocated deltaEncodedChunk.
+func newDeltaEncodedChunk(tb, vb deltaBytes, isInt bool) *deltaEncodedChunk {
+	if tb < 1 {
+		panic("need at least 1 time delta byte")
+	}
+	buf := make([]byte, deltaHeaderIsIntOffset+1, 1024)
+
+	buf[deltaHeaderTimeBytesOffset] = byte(tb)
+	buf[deltaHeaderValueBytesOffset] = byte(vb)
+	if vb < d8 && isInt { // Only use int for fewer than 8 value delta bytes.
+		buf[deltaHeaderIsIntOffset] = 1
+	} else {
+		buf[deltaHeaderIsIntOffset] = 0
+	}
+
+	return &deltaEncodedChunk{
+		buf: buf,
+	}
+}
+
+func (c *deltaEncodedChunk) newFollowupChunk() chunk {
+	return newDeltaEncodedChunk(d1, d0, true)
+}
+
+// clone implements chunk.
+func (c *deltaEncodedChunk) clone() chunk {
+	buf := make([]byte, len(c.buf), 1024)
+	copy(buf, c.buf)
+	return &deltaEncodedChunk{
+		buf: buf,
+	}
 }
 
 func (c *deltaEncodedChunk) timeBytes() deltaBytes {
@@ -182,12 +196,11 @@ func (c *deltaEncodedChunk) add(s *metric.SamplePair) []chunk {
 	// existing chunk data into new chunk(s).
 	//
 	// int->float.
-	// Note: Using math.Modf is slower than the conversion approach below.
-	if c.isInt() && clientmodel.SampleValue(int64(dv)) != dv {
+	if c.isInt() && !isInt64(dv) {
 		return transcodeAndAdd(newDeltaEncodedChunk(tb, d4, false), c, s)
 	}
 	// float32->float64.
-	if !c.isInt() && vb == d4 && clientmodel.SampleValue(float32(dv)) != dv {
+	if !c.isInt() && vb == d4 && !isFloat32(dv) {
 		return transcodeAndAdd(newDeltaEncodedChunk(tb, d8, false), c, s)
 	}
 	if tb < d8 || vb < d8 {
